@@ -10,7 +10,7 @@
 typedef struct {
     long mtype;
     key_t memory_key;
-    ssize_t filesize;
+    long request_id;
 } initial_message_t;
 
 typedef struct {

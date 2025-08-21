@@ -6,25 +6,31 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "inc/common.h"
 #include "inc/semaphores.h"
 
 void hashFile(char *filePath) {
+    srand(time(NULL)); //inizializzo il generatore di numeri casuali con il tempo corrente
+
     initial_message_t imsg;
-    imsg.mtype = 1; //tipo del messaggio filtrato (messaggio iniziale)
+    imsg.request_id = rand(); //genero un id di richiesta casuale
     imsg.memory_key = ftok(filePath, 3); //3 valore a caso diverso da 0, ftok genera una chiave per il file
 
     struct stat sb; //leggo le stat del file, mi interessa la dimensione (riga 25)
     if(lstat (filePath, &sb) == -1){
         errExit("errore nella lettura del file");
     }
-    imsg.filesize = sb.st_size; //passo anche la dimensione del file nel messaggio al server
+    imsg.mtype = sb.st_size; //il tipo del messaggio è la dimensione del file
 
-    //recupero la coda di messaggi
-    int msqid = msgget(COMMON_IPC_KEY, 0); //id della message queue
-    if(msqid == -1)
-        errExit("impossibile recuperare la coda di messaggi");
+    //recupero le code di messaggi
+    int reqQueueId = msgget(COMMON_IPC_KEY, 0); //id della message queue delle richieste
+    if(reqQueueId == -1)
+        errExit("impossibile recuperare la coda di messaggi per le richieste");
+    int replyQueueId = msgget(COMMON_IPC_KEY + 1, 0); //id della message queue delle risposte
+    if(replyQueueId == -1)
+        errExit("impossibile recuperare la coda di messaggi per le risposte");
 
     //creo la memoria condivisa
     int memid = shmget(imsg.memory_key, sb.st_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //id memoria condivisa in cui salviamo il contenuto del file da criptare
@@ -50,13 +56,13 @@ void hashFile(char *filePath) {
 
     //messaggio inviato al server con la chiave dell'area di memoria in cui viene salvato il file
     size_t mSize = sizeof(initial_message_t) - sizeof(long); //calcolo da dimensione del messaggio
-    if (msgsnd(msqid, &imsg, mSize, 0) == -1) //invio del messaggio al server
+    if (msgsnd(reqQueueId, &imsg, mSize, 0) == -1) //invio del messaggio al server
         errExit("msgsnd failed\n");
 
     //messaggio di risposta con l'hash fatto dal server
     reply_message_t rmsg;
     mSize = sizeof(reply_message_t) - sizeof(long); //calcolo la dim del messaggio
-    if (msgrcv(msqid, &rmsg, mSize, 2, 0) == -1) //ricevo il messaggio
+    if (msgrcv(replyQueueId, &rmsg, mSize, imsg.request_id, 0) == -1) //ricevo il messaggio
         errExit("msgrcv failed");
 
     //printo l'hash come stringa di esadecimali
