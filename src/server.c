@@ -1,21 +1,20 @@
 #include <stdio.h>
 #include <sys/msg.h>
 #include <sys/shm.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <openssl/sha.h>
 #include <signal.h>
-#include <sys/sem.h>
 
-#include "common.h"
+#include "inc/common.h"
+#include "inc/semaphores.h"
 
 int msqid;
 int maxProcSemId;
 int maxProcMemId;
 
-//gestione del ctrl c (chiusura del server)
+//gestione del C-c (chiusura del server)
 void sig_handler(int sig) {
     if (sig == SIGINT) {
         printf("Disconnecting now...\n");
@@ -39,67 +38,81 @@ void setup_signals() {
 }
 
 
-void sha256(void *filebuf, ssize_t filesize, uint8_t *hash){
+void sha256(void *filebuf, ssize_t filesize, uint8_t *hash) {
     SHA256_CTX ctx;
     SHA256_Init(&ctx);
-    
+
     SHA256_Update(&ctx, (uint8_t *)filebuf, filesize);
     SHA256_Final(hash, &ctx);
 }
 
-int main(){
-    maxProcSemId = semget(54, 1, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
-
-    maxProcMemId = shmget(235, sizeof(int), IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
-
-    int *maxProc = (int *)shmat(maxProcMemId, NULL, 0); //puntatore all'area di memoria condivisa allocata
+void setupProcessControl() {
+    maxProcMemId = shmget(COMMON_IPC_KEY, sizeof(int), IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+    int *maxProc = (int *)shmat(maxProcMemId, NULL, 0); //puntatore all'area di memoria con il numero massimo di processi
     if(maxProc == -1)
         errExit("impossibile montare la memoria condivisa");
-    *maxProc = 3;
+    *maxProc = 1;
 
     union semun arg;
+    maxProcSemId = semget(COMMON_IPC_KEY, 1, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //creo il semaforo per il controllo del numero di processi
     arg.val = *maxProc;
     if (semctl(maxProcSemId, 0, SETVAL, arg) == -1)
-        errExit("semctl SETVAL");
+        errExit("Impossibile inizializzare il semaforo");
 
-    initial_message_t imsg;
-    msqid = msgget(69, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //crea la coda di mess a cui si collegherà anche il client
+    shmdt(maxProc); //al server non serve più il numero di processi massimi, lo userà solo il client
+}
+
+void setupIPC() {
+    msqid = msgget(COMMON_IPC_KEY, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //crea la coda di mess a cui si collegherà anche il client
     if(msqid == -1)
         errExit("impossibile creare la coda di messaggi");
 
-    setup_signals();
+    setupProcessControl(); //creo la memoria condivisa e il semaforo per il controllo del numero di processi
+    setup_signals(); //configuro la gestione dei segnali (C-c)
+}
 
+int main() {
+    #ifdef DEBUG
+    printf("[DEBUG] Debug enabled. Requests will be paused.\n");
+    #endif
+
+    setupIPC(); //creo la coda di messaggi e configuro la gestione di segnali e sottoprocessi
+
+    initial_message_t imsg;
     size_t mSize = sizeof(initial_message_t) - sizeof(long); //calcolo la dim del messaggio
 
     while(1){
         if (msgrcv(msqid, &imsg, mSize, 1, 0) == -1) //ricevo il messaggio
             errExit("msgrcv failed");
 
-        sem_p(maxProcSemId, 0, 1);
+        sem_p(maxProcSemId, 0, 1); //attendo che ci sia spazio per un nuovo processo
         if(fork() == 0)
             break;
     }
-    
+
     int memid = shmget(imsg.memory_key, imsg.filesize, 0); //mi collego alla memoria condivisa creata dal client
     if(memid == -1)
         errExit("impossibile recuperare la memoria condivisa");
 
-    void *filebuf = shmat(memid, NULL, 0);
+    void *filebuf = shmat(memid, NULL, 0); //montaggio della memoria condivisa
     if(filebuf == -1)
         errExit("impossibile montare la memoria condivisa");
 
     reply_message_t rmsg; //creo il messaggio di risposta
     rmsg.mtype = 2; //definisco un nuovo id per il messaggio di risposta diverso da quello di invio
     sha256(filebuf, imsg.filesize, rmsg.hash); //faccio l'hashing del contenuto del file che troverò in hash
-    
-    printf("attesa...");
-    char maracas;
-    scanf("%c", &maracas);
-    
+
+    #ifdef DEBUG
+    printf("[DEBUG] Risposta al client in attesa...");
+    char send;
+    scanf("%c", &send);
+    #endif
+
     mSize = sizeof(reply_message_t) - sizeof(long); //calcolo la dim del messaggio
     if(msgsnd(msqid, &rmsg, mSize, 0) == -1) //invio del messaggio al client
         errExit("msgsnd failed\n");
 
     shmctl(memid, IPC_RMID, NULL); //elimino la memoria condivisa
-    sem_v(maxProcSemId, 0, 1);
+
+    sem_v(maxProcSemId, 0, 1); //segnalo che il processo è terminato e che ora c'è spazio per un nuovo processo
 }

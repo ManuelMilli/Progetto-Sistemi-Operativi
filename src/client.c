@@ -4,32 +4,30 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdint.h>
 
-#include "common.h"
+#include "inc/common.h"
 
 int main(int argc, char *argv[]){
-
     //controllo che siano stati passati 2 paramentri a riga di comando
     //nome eseguibile + file da criptare
     if(argc != 2)
         errExit("file non specificato");
-    
+
     initial_message_t imsg;
     imsg.mtype = 1; //tipo del messaggio filtrato (messaggio iniziale)
     imsg.memory_key = ftok(argv[1], 3); //3 valore a caso diverso da 0, ftok genera una chiave per il file
-    
+
     struct stat sb; //leggo le stat del file, mi interessa la dimensione (riga 25)
     if(lstat (argv[1], &sb) == -1){
         errExit("errore nella lettura del file");
     }
     imsg.filesize = sb.st_size; //passo anche la dimensione del file nel messaggio al server
-    
+
     //recupero la coda di messaggi
-    int msqid = msgget(69, 0); //id della message queue
+    int msqid = msgget(COMMON_IPC_KEY, 0); //id della message queue
     if(msqid == -1)
         errExit("impossibile recuperare la coda di messaggi");
-    
+
     //creo la memoria condivisa
     int memid = shmget(imsg.memory_key, sb.st_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //id memoria condivisa in cui salviamo il contenuto del file da criptare
     if(memid == -1)
@@ -57,18 +55,14 @@ int main(int argc, char *argv[]){
     if (msgsnd(msqid, &imsg, mSize, 0) == -1) //invio del messaggio al server
         errExit("msgsnd failed\n");
 
-
     //messaggio di risposta con l'hash fatto dal server
     reply_message_t rmsg;
     mSize = sizeof(reply_message_t) - sizeof(long); //calcolo la dim del messaggio
     if (msgrcv(msqid, &rmsg, mSize, 2, 0) == -1) //ricevo il messaggio
         errExit("msgrcv failed");
 
-    
     //printo l'hash come stringa di esadecimali
     char char_hash[65];
-    for(int i = 0; i < 32; i++)
-        sprintf(char_hash + (i * 2), "%02x", rmsg.hash[i]); //inserisco nella stringa il byte dell'hash in base 16
-    char_hash[64] = 0;
+    prettifyHash(rmsg.hash, char_hash); //converto l'hash in stringa di esadecimali
     printf("%s\n", char_hash);
 }
