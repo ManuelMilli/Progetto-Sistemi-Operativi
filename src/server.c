@@ -54,10 +54,13 @@ void setupProcessControl() {
     *maxProc = 1;
 
     union semun arg;
-    maxProcSemId = semget(COMMON_IPC_KEY, 1, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //creo il semaforo per il controllo del numero di processi
-    arg.val = *maxProc;
+    maxProcSemId = semget(COMMON_IPC_KEY, 2, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR); //creo il semaforo per il controllo del numero di processi
+    arg.val = *maxProc; //inizializzo il semaforo con il numero massimo di processi
     if (semctl(maxProcSemId, 0, SETVAL, arg) == -1)
-        errExit("Impossibile inizializzare il semaforo");
+        errExit("Impossibile inizializzare il semaforo 1");
+    arg.val = 1; //inizializzo il secondo semaforo a 1, per poter fare il P e V
+    if (semctl(maxProcSemId, 1, SETVAL, arg) == -1)
+        errExit("Impossibile inizializzare il semaforo 2");
 
     shmdt(maxProc); //al server non serve più il numero di processi massimi, lo userà solo il client
 }
